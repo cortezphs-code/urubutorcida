@@ -177,7 +177,8 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
 
   <div id="game-wrapper">
     <div id="top-controls">
-      <button class="ctrl-btn" id="btn-live" title="Conectar TikTok Live">📡 LIVE</button>
+      <button class="ctrl-btn" id="btn-live" title="Conectar / Desconectar TikTok Live">📡 LIVE</button>
+      <button class="ctrl-btn" id="btn-disconnect-top" title="Desconectar da Live" style="display:none; background:rgba(229,9,20,0.9); border-color:#ff8080;">🔌 SAIR LIVE</button>
       <button class="ctrl-btn" id="btn-bots" title="Ativar/Desativar Bots (Tecla B)">🤖 BOTS: ON</button>
       <button class="ctrl-btn" id="btn-sound" title="Som">🔊</button>
       <button class="ctrl-btn" id="btn-fs" title="Tela Cheia">⛶</button>
@@ -187,10 +188,11 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       <div class="modal-card">
         <h2>📡 CONECTAR TIKTOK LIVE</h2>
         <p>Digite seu <b>@usuario</b> do TikTok (em Live agora) para capturar comentários, likes, presentes e espectadores em tempo real.</p>
-        <input type="text" id="tiktok-user-input" class="modal-input" placeholder="Ex: urubudoflow" />
+        <input type="text" id="tiktok-user-input" class="modal-input" placeholder="Ex: nacaourubu12" />
         <div id="live-modal-status" style="font-size:11px; color:#ffd700; margin-bottom:12px; min-height:18px; font-weight:700;"></div>
         <div class="modal-actions">
           <button class="btn-secondary" id="btn-close-modal">Fechar</button>
+          <button class="btn-secondary" id="btn-disconnect-live" style="border-color:#ff4d4d; color:#ff6b6b;">🔌 Desconectar</button>
           <button class="btn-primary" id="btn-connect-live">Conectar Live</button>
         </div>
       </div>
@@ -477,11 +479,11 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
     let floatingTexts = [];
     let screenShake = 0;
 
-    // Arena Bounds
+    // Arena Bounds (abaixo do painel superior de comentários para não ficar atrás do chat do TikTok!)
     const ARENA_X = 28;
-    const ARENA_Y = 250;
+    const ARENA_Y = 448;
     const ARENA_W = W - 56;
-    const ARENA_H = 1230;
+    const ARENA_H = 1170;
 
     function addTeamPower(teamKey, amount, nickname, customLabel) {
       if (gameState !== 'PLAYING') return;
@@ -643,8 +645,8 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
     }
 
     // Parse chat comments client-side too
-    function detectTeamClient(raw) {
-      const clean = String(raw || '')
+    function detectTeamClient(rawInput) {
+      const clean = String(rawInput || '')
         .toLowerCase()
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
@@ -714,15 +716,20 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
 
     function handleServerEvent(data) {
       if (data.type === 'status') {
+        const wasConnected = liveConnected;
         liveConnected = !!data.connected;
-        if (data.username) liveUsername = data.username;
+        liveUsername = data.username || '';
         if (typeof data.viewerCount === 'number') {
           liveViewerCount = data.viewerCount;
+        }
+        const btnDiscTop = document.getElementById('btn-disconnect-top');
+        if (btnDiscTop) {
+          btnDiscTop.style.display = liveConnected ? 'inline-block' : 'none';
         }
         if (data.message || data.error) {
           setModalStatus(data.error || data.message, liveConnected ? '#00ff88' : '#ffd700');
         }
-        if (liveConnected) {
+        if (liveConnected && !wasConnected) {
           botsEnabled = false;
           document.getElementById('btn-bots').textContent = '🤖 BOTS: OFF';
           addTicker(`🟢 Conectado à Live de @${liveUsername}!`, '#00ff88');
@@ -760,6 +767,7 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
         const teamKey = userLastTeam.get(uid);
         if (teamKey && TEAMS[teamKey]) {
           addTeamPower(teamKey, 0.35, sender, `❤️ LIKE`);
+          addTicker(`❤️ @${sender} curtiu pelo ${TEAMS[teamKey].name}!`, TEAMS[teamKey].accent);
         }
         return;
       }
@@ -874,6 +882,27 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
     document.getElementById('btn-close-modal').addEventListener('click', () => {
       liveModal.classList.remove('open');
     });
+    function disconnectLive() {
+      try {
+        localStorage.removeItem('tiktok_live_user');
+      } catch (_) {}
+      liveConnected = false;
+      liveUsername = '';
+      liveViewerCount = 0;
+      const btnDiscTop = document.getElementById('btn-disconnect-top');
+      if (btnDiscTop) btnDiscTop.style.display = 'none';
+      setModalStatus('🔌 Live desconectada com sucesso.', '#ff8080');
+      addTicker('🔌 Live desconectada pelo apresentador.', '#ff8080');
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'disconnect_tiktok' }));
+      } else {
+        fetch('/disconnect').catch(() => {});
+      }
+    }
+
+    document.getElementById('btn-disconnect-live').addEventListener('click', disconnectLive);
+    document.getElementById('btn-disconnect-top').addEventListener('click', disconnectLive);
+
     document.getElementById('btn-connect-live').addEventListener('click', () => {
       const user = document.getElementById('tiktok-user-input').value.replace(/^@/, '').trim();
       if (!user) return;
@@ -902,12 +931,20 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
         roundTimer -= dt;
         if (roundTimer <= 0) {
           roundTimer = 0;
-          // Winner is team with highest share
           let bestKey = 'fla';
+          let minShare = 1;
+          let maxShare = 0;
           TEAM_KEYS.forEach((k) => {
             if (TEAMS[k].share > TEAMS[bestKey].share) bestKey = k;
+            if (TEAMS[k].share > maxShare) maxShare = TEAMS[k].share;
+            if (TEAMS[k].share < minShare) minShare = TEAMS[k].share;
           });
-          triggerVictory(bestKey, 'TEMPO ESGOTADO — MAIOR TERRITÓRIO!');
+          if (maxShare - minShare < 0.005) {
+            roundTimer = ROUND_DURATION;
+            addTicker('⚖️ Empate sem votos na rodada! Novo tempo iniciado.', '#ffd700');
+          } else {
+            triggerVictory(bestKey, 'TEMPO ESGOTADO — MAIOR TERRITÓRIO!');
+          }
         }
       } else if (gameState === 'VICTORY') {
         victoryTimer -= dt;
@@ -1224,6 +1261,33 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       drawRoundedRect(barX, barY, barW, barH, 14);
       ctx.stroke();
 
+      // ================= TOP COMMENTS FEED (ACIMA DO MAPA — LIVRE DO CHAT DO TIKTOK!) =================
+      const tickerY = 236;
+      const tickerH = 198;
+      ctx.fillStyle = 'rgba(9, 14, 28, 0.94)';
+      drawRoundedRect(28, tickerY, W - 56, tickerH, 20);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.font = '900 20px "Montserrat", sans-serif';
+      ctx.fillStyle = '#00e5ff';
+      ctx.textAlign = 'left';
+      ctx.fillText('💬 ÚLTIMOS COMENTÁRIOS E AÇÕES NA LIVE (DIGITE URUBU / PORCO / GAVIAO / VASCO):', 50, tickerY + 32);
+
+      if (recentTicker.length === 0) {
+        ctx.font = '800 22px "Montserrat", sans-serif';
+        ctx.fillStyle = '#8fa2c9';
+        ctx.fillText('Aguardando comentários da torcida no chat...', 50, tickerY + 80);
+      } else {
+        recentTicker.slice(0, 4).forEach((item, i) => {
+          ctx.font = '800 22px "Montserrat", sans-serif';
+          ctx.fillStyle = item.color || '#ffffff';
+          ctx.fillText(item.text.slice(0, 56), 50, tickerY + 70 + i * 36);
+        });
+      }
+
       // ================= ARENA (4 QUADRANTS) =================
       ctx.save();
       drawRoundedRect(ARENA_X, ARENA_Y, ARENA_W, ARENA_H, 26);
@@ -1340,8 +1404,8 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       drawRoundedRect(ARENA_X, ARENA_Y, ARENA_W, ARENA_H, 26);
       ctx.stroke();
 
-      // ================= BOTTOM HUD: COMMANDS & LIVE FEED =================
-      const footY = ARENA_Y + ARENA_H + 18;
+      // ================= BOTTOM HUD: COMMANDS & GIFTS =================
+      const footY = ARENA_Y + ARENA_H + 16;
 
       // Gift / Boost Banner
       ctx.fillStyle = 'rgba(15, 20, 38, 0.95)';
@@ -1384,26 +1448,6 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       ctx.fillStyle = '#00ffaa';
       ctx.textAlign = 'center';
       ctx.fillText('🌹 ROSA = ATAQUE PESADO (+5%)   |   ⚡ GIFT 10+ = BOMBA (+14%)   |   💣 GIFT 100+ = DEVASTAÇÃO (+35%)', W / 2, footY + 148);
-
-      // Recent Live Chat / Action Ticker
-      const tickerY = footY + 190;
-      ctx.fillStyle = 'rgba(9, 13, 24, 0.9)';
-      drawRoundedRect(28, tickerY, W - 56, 210, 20);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      ctx.font = '900 20px "Montserrat", sans-serif';
-      ctx.fillStyle = '#8fa2c9';
-      ctx.textAlign = 'left';
-      ctx.fillText('⚡ ÚLTIMAS AÇÕES DA TORCIDA NA LIVE:', 52, tickerY + 34);
-
-      recentTicker.slice(0, 4).forEach((item, i) => {
-        ctx.font = '800 22px "Montserrat", sans-serif';
-        ctx.fillStyle = item.color || '#ffffff';
-        ctx.fillText(item.text.slice(0, 54), 52, tickerY + 74 + i * 38);
-      });
 
       // ================= VICTORY OVERLAY =================
       if (gameState === 'VICTORY' && winnerTeamKey) {

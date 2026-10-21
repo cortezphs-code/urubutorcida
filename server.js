@@ -30,7 +30,7 @@ let wss = null;
 function broadcast(eventObj) {
   const jsonStr = JSON.stringify(eventObj);
 
-  // 1. Envia via WebSocket (igual ao urubu-corrida-live)
+  // 1. Envia via WebSocket
   if (wss) {
     wss.clients.forEach((client) => {
       if (client.readyState === 1) {
@@ -70,8 +70,6 @@ function detectTeam(text) {
     clean.includes('flamengo') ||
     clean.includes('mengao') ||
     clean.includes('mengo') ||
-    clean.includes('rubro') ||
-    clean.includes('crf') ||
     /\bfla\b/.test(clean) ||
     clean === '1'
   ) {
@@ -83,8 +81,6 @@ function detectTeam(text) {
     clean.includes('porco') ||
     clean.includes('palmeiras') ||
     clean.includes('verdao') ||
-    clean.includes('alviverde') ||
-    clean.includes('sep') ||
     /\bpal\b/.test(clean) ||
     clean === '2'
   ) {
@@ -96,9 +92,7 @@ function detectTeam(text) {
     clean.includes('gaviao') ||
     clean.includes('corinthians') ||
     clean.includes('timao') ||
-    clean.includes('mosqueteiro') ||
     clean.includes('fiel') ||
-    clean.includes('sccp') ||
     /\bcor\b/.test(clean) ||
     clean === '3'
   ) {
@@ -111,8 +105,6 @@ function detectTeam(text) {
     clean.includes('almirante') ||
     clean.includes('gigante') ||
     clean.includes('vascao') ||
-    clean.includes('bacalhau') ||
-    clean.includes('crvg') ||
     /\bvas\b/.test(clean) ||
     clean === '4'
   ) {
@@ -133,6 +125,27 @@ function extractUsername(data) {
     );
   }
   return data.uniqueId || data.displayId || data.nickname || 'Torcedor';
+}
+
+function disconnectFromTikTok() {
+  const oldUser = currentTikTokUser;
+  if (tiktokConnection) {
+    try {
+      tiktokConnection.disconnect();
+    } catch (_) {}
+    tiktokConnection = null;
+  }
+  currentTikTokUser = '';
+  currentViewerCount = 0;
+  console.log(`🔌 Desconectado da Live${oldUser ? ` de @${oldUser}` : ''}.`);
+  broadcast({
+    type: 'status',
+    connected: false,
+    connecting: false,
+    username: '',
+    viewerCount: 0,
+    message: '🔌 Live desconectada (Modo Simulação / Bots).'
+  });
 }
 
 function connectToTikTok(username) {
@@ -171,7 +184,7 @@ function connectToTikTok(username) {
     enableExtendedGiftInfo: false
   });
 
-  // IMPORTANTE: evita crash do Node se o TikTok emitir aviso/erro secundário
+  // Evita crash do Node se o TikTok emitir aviso secundário
   tiktokConnection.on('error', (err) => {
     console.error('⚠️ Aviso TikTok Live:', err && err.message ? err.message : err);
   });
@@ -203,7 +216,7 @@ function connectToTikTok(username) {
         username: cleanUser,
         roomId: state && state.roomId,
         viewerCount: currentViewerCount,
-        message: `LIVE CONECTADA: @${cleanUser}`
+        message: `✅ LIVE CONECTADA: @${cleanUser}`
       });
     })
     .catch((err) => {
@@ -286,7 +299,7 @@ function connectToTikTok(username) {
     });
   });
 
-  // Entrada de espectadores (atualiza contador em tempo real)
+  // Entrada de espectadores
   tiktokConnection.on('member', (data) => {
     const count = Number((data && (data.memberCount ?? data.viewerCount)) || 0);
     if (count > 0) {
@@ -298,7 +311,7 @@ function connectToTikTok(username) {
     }
   });
 
-  // Atualização periódica da sala (v2 data.total e v1 data.viewerCount)
+  // Atualização periódica da sala
   tiktokConnection.on('roomUser', (data) => {
     const count = Number((data && (data.total ?? data.viewerCount ?? data.userCount)) ?? -1);
     if (count >= 0) {
@@ -310,12 +323,26 @@ function connectToTikTok(username) {
     }
   });
 
+  // Reconecta automaticamente se o WebSocket do TikTok cair durante a Live
+  tiktokConnection.on('disconnected', () => {
+    console.warn(`⚠️ WebSocket do TikTok desconectou de @${cleanUser}. Reconectando em 3s...`);
+    if (currentTikTokUser === cleanUser) {
+      setTimeout(() => {
+        if (currentTikTokUser === cleanUser) {
+          connectToTikTok(cleanUser);
+        }
+      }, 3000);
+    }
+  });
+
   tiktokConnection.on('streamEnd', () => {
     currentViewerCount = 0;
+    tiktokConnection = null;
+    currentTikTokUser = '';
     broadcast({
       type: 'status',
       connected: false,
-      username: cleanUser,
+      username: '',
       viewerCount: 0,
       error: 'Live encerrada',
       message: 'Live encerrada'
@@ -355,7 +382,7 @@ const server = http.createServer((req, res) => {
         username: currentTikTokUser,
         viewerCount: currentViewerCount,
         message: currentTikTokUser
-          ? `LIVE CONECTADA: @${currentTikTokUser}`
+          ? `✅ LIVE CONECTADA: @${currentTikTokUser}`
           : 'Clique em 📡 LIVE no topo para conectar seu @usuario'
       })}\n\n`
     );
@@ -374,6 +401,13 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (parsedUrl.pathname === '/disconnect') {
+    disconnectFromTikTok();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ ok: true, connected: false }));
+    return;
+  }
+
   let filePath = parsedUrl.pathname === '/' ? '/index.html' : parsedUrl.pathname;
   const safePath = path.normalize(filePath).replace(/^(\.\.[\/\\])+/, '');
   const fullPath = path.join(__dirname, safePath);
@@ -385,22 +419,38 @@ const server = http.createServer((req, res) => {
       return;
     }
     const ext = path.extname(fullPath).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+      'Cache-Control': 'no-store, no-cache, must-revalidate'
+    });
     res.end(content);
   });
 });
 
 if (WebSocketServer) {
   wss = new WebSocketServer({ server });
+
+  // Keep-alive ping a cada 20s para o proxy do Render nunca fechar o WebSocket
+  setInterval(() => {
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) {
+        try {
+          client.ping();
+        } catch (_) {}
+      }
+    });
+  }, 20000);
+
   wss.on('connection', (ws) => {
+    const isConn = !!(tiktokConnection && tiktokConnection.isConnected && currentTikTokUser);
     ws.send(
       JSON.stringify({
         type: 'status',
-        connected: !!(tiktokConnection && currentTikTokUser),
+        connected: isConn,
         username: currentTikTokUser,
         viewerCount: currentViewerCount,
-        message: currentTikTokUser
-          ? `LIVE CONECTADA: @${currentTikTokUser}`
+        message: isConn
+          ? `✅ LIVE CONECTADA: @${currentTikTokUser}`
           : 'Servidor pronto! Digite seu @usuario para conectar.'
       })
     );
@@ -410,6 +460,8 @@ if (WebSocketServer) {
         const data = JSON.parse(msg.toString());
         if ((data.type === 'connect_tiktok' || data.type === 'connect') && data.username) {
           connectToTikTok(data.username);
+        } else if (data.type === 'disconnect_tiktok' || data.type === 'disconnect') {
+          disconnectFromTikTok();
         }
       } catch (_) {}
     });
