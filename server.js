@@ -1,13 +1,22 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-let TikTokLiveConnection;
+let WebSocketServer;
+let LiveConnectionClass;
+
+try {
+  WebSocketServer = require('ws').WebSocketServer;
+} catch (e) {
+  console.warn('⚠️ Pacote "ws" não instalado. Rode: npm install');
+}
+
 try {
   const pkg = require('tiktok-live-connector');
-  TikTokLiveConnection = pkg.TikTokLiveConnection || pkg.WebcastPushConnection;
+  LiveConnectionClass = pkg.TikTokLiveConnection || pkg.WebcastPushConnection;
 } catch (err) {
-  console.warn('⚠️ tiktok-live-connector não instalado ainda. Rode: npm install');
+  console.warn('⚠️ Pacote "tiktok-live-connector" não instalado. Rode: npm install');
 }
 
 const PORT = process.env.PORT || 3000;
@@ -15,15 +24,30 @@ let currentTikTokUser = (process.env.TIKTOK_USER || '').replace(/^@/, '').trim()
 let tiktokConnection = null;
 let currentViewerCount = 0;
 
-const clients = new Set();
+const sseClients = new Set();
+let wss = null;
 
 function broadcast(eventObj) {
-  const payload = `data: ${JSON.stringify(eventObj)}\n\n`;
-  for (const res of clients) {
+  const jsonStr = JSON.stringify(eventObj);
+
+  // 1. Envia via WebSocket (igual ao urubu-corrida-live)
+  if (wss) {
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) {
+        try {
+          client.send(jsonStr);
+        } catch (_) {}
+      }
+    });
+  }
+
+  // 2. Envia também via SSE (/events) como fallback
+  const ssePayload = `data: ${jsonStr}\n\n`;
+  for (const res of sseClients) {
     try {
-      res.write(payload);
+      res.write(ssePayload);
     } catch (_) {
-      clients.delete(res);
+      sseClients.delete(res);
     }
   }
 }
@@ -98,15 +122,36 @@ function detectTeam(text) {
   return null;
 }
 
+function extractUsername(data) {
+  if (!data) return 'Torcedor';
+  if (data.user) {
+    return (
+      data.user.uniqueId ||
+      data.user.displayId ||
+      data.user.nickname ||
+      'Torcedor'
+    );
+  }
+  return data.uniqueId || data.displayId || data.nickname || 'Torcedor';
+}
+
 function connectToTikTok(username) {
-  if (!TikTokLiveConnection) {
-    broadcast({ type: 'status', connected: false, message: 'tiktok-live-connector ausente' });
+  if (!LiveConnectionClass) {
+    broadcast({
+      type: 'status',
+      connected: false,
+      message: 'Instale as dependências com "npm install" para conectar ao TikTok.'
+    });
     return;
   }
 
   const cleanUser = (username || '').replace(/^@/, '').trim();
   if (!cleanUser) {
-    broadcast({ type: 'status', connected: false, message: 'Aguardando @usuario da Live' });
+    broadcast({
+      type: 'status',
+      connected: false,
+      message: 'Digite o @usuario da Live para conectar'
+    });
     return;
   }
 
@@ -118,77 +163,107 @@ function connectToTikTok(username) {
   }
 
   currentTikTokUser = cleanUser;
+  currentViewerCount = 0;
   console.log(`🔌 Conectando à Live de @${cleanUser}...`);
-  broadcast({ type: 'status', connected: false, connecting: true, username: cleanUser });
 
-  tiktokConnection = new TikTokLiveConnection(cleanUser, {
+  tiktokConnection = new LiveConnectionClass(cleanUser, {
     processInitialData: true,
-    enableExtendedGiftInfo: true,
-    requestPollingIntervalMs: 1000
+    enableExtendedGiftInfo: true
+  });
+
+  // IMPORTANTE: evita crash do Node se o TikTok emitir aviso/erro secundário
+  tiktokConnection.on('error', (err) => {
+    console.error('⚠️ Aviso TikTok Live:', err && err.message ? err.message : err);
+  });
+
+  broadcast({
+    type: 'status',
+    connected: false,
+    connecting: true,
+    username: cleanUser,
+    viewerCount: 0,
+    message: `Conectando à live de @${cleanUser}...`
   });
 
   tiktokConnection
     .connect()
     .then((state) => {
-      const initialViewers =
-        state?.roomInfo?.data?.user_count ||
-        state?.roomInfo?.user_count ||
-        state?.viewerCount ||
-        0;
-      if (initialViewers > 0) {
-        currentViewerCount = initialViewers;
-      }
-      console.log(`✅ Conectado à Live de @${cleanUser} (Room ID: ${state.roomId}, Viewers: ${currentViewerCount})`);
+      const initialViewers = Number(
+        (state && state.roomInfo && state.roomInfo.data && state.roomInfo.data.user_count) ||
+        (state && state.roomInfo && state.roomInfo.user_count) ||
+        (state && state.viewerCount) ||
+        currentViewerCount ||
+        0
+      );
+      currentViewerCount = initialViewers;
+      console.log(`✅ Conectado à Live de @${cleanUser} (Espectadores: ${currentViewerCount})`);
       broadcast({
         type: 'status',
         connected: true,
         username: cleanUser,
-        roomId: state.roomId,
-        viewerCount: currentViewerCount
+        roomId: state && state.roomId,
+        viewerCount: currentViewerCount,
+        message: `LIVE CONECTADA: @${cleanUser}`
       });
     })
     .catch((err) => {
-      console.error(`❌ Erro ao conectar em @${cleanUser}:`, err.message || err);
+      const errMsg = (err && err.message) || 'Verifique se a conta está AO VIVO agora';
+      console.error(`❌ Erro ao conectar em @${cleanUser}:`, errMsg);
       broadcast({
         type: 'status',
         connected: false,
         username: cleanUser,
-        error: err.message || 'Falha ao conectar na Live (verifique se está AO VIVO)'
+        viewerCount: 0,
+        error: errMsg,
+        message: `Erro ao conectar em @${cleanUser}: ${errMsg}`
       });
     });
 
-  // Chat messages (v2 uses data.content, v1 uses data.comment)
+  // Chat messages (suporta v2 data.content e v1 data.comment)
   tiktokConnection.on('chat', (data) => {
-    const rawComment = data?.content || data?.comment || '';
-    const nickname = data?.user?.nickname || data?.nickname || data?.user?.uniqueId || data?.uniqueId || 'Torcedor';
-    const userId = data?.user?.uniqueId || data?.uniqueId || nickname;
-    const avatar =
-      data?.user?.profilePicture?.url?.[0] ||
-      data?.profilePictureUrl ||
-      '';
+    const rawComment = (data && (data.content || data.comment)) || '';
+    const comment = String(rawComment).trim();
+    const nickname = extractUsername(data);
+    const userId = (data && data.user && data.user.uniqueId) || data.uniqueId || nickname;
 
-    const team = detectTeam(rawComment);
+    console.log(`💬 [${nickname}]: ${comment}`);
+    if (!comment) return;
+
+    const team = detectTeam(comment);
     broadcast({
       type: 'chat',
+      user: nickname,
       userId,
       nickname,
-      avatar,
-      comment: rawComment,
+      comment,
       team
     });
   });
 
-  // Gifts
+  // Presentes (Gifts)
   tiktokConnection.on('gift', (data) => {
-    if (data.giftType === 1 && !data.repeatEnd) return;
-    const nickname = data?.user?.nickname || data?.nickname || data?.user?.uniqueId || data?.uniqueId || 'Torcedor VIP';
-    const userId = data?.user?.uniqueId || data?.uniqueId || nickname;
-    const giftName = data?.giftName || data?.extendedGiftInfo?.name || 'Presente';
-    const repeatCount = data?.repeatCount || 1;
-    const diamondCount = (data?.diamondCount || data?.extendedGiftInfo?.diamond_count || 1) * repeatCount;
+    if (data && data.giftType === 1 && !data.repeatEnd) return;
+    const nickname = extractUsername(data);
+    const userId = (data && data.user && data.user.uniqueId) || data.uniqueId || nickname;
+    const giftName =
+      (data && data.giftDetails && data.giftDetails.giftName) ||
+      (data && data.extendedGiftInfo && data.extendedGiftInfo.name) ||
+      (data && data.giftName) ||
+      'Presente';
+    const repeatCount = Number((data && data.repeatCount) || 1);
+    const baseDiamonds = Number(
+      (data && data.giftDetails && data.giftDetails.diamondCount) ||
+      (data && data.extendedGiftInfo && data.extendedGiftInfo.diamond_count) ||
+      (data && data.fanTicketCount) ||
+      (data && data.diamondCount) ||
+      1
+    );
+    const diamondCount = baseDiamonds * repeatCount;
 
+    console.log(`🎁 [${nickname}] enviou ${giftName} (${diamondCount} moedas)`);
     broadcast({
       type: 'gift',
+      user: nickname,
       userId,
       nickname,
       giftName,
@@ -197,39 +272,54 @@ function connectToTikTok(username) {
     });
   });
 
-  // Likes
+  // Curtidas (Likes)
   tiktokConnection.on('like', (data) => {
-    const nickname = data?.user?.nickname || data?.nickname || data?.user?.uniqueId || data?.uniqueId || 'Torcedor';
-    const userId = data?.user?.uniqueId || data?.uniqueId || nickname;
-    const likeCount = data?.likeCount || 1;
+    const nickname = extractUsername(data);
+    const userId = (data && data.user && data.user.uniqueId) || data.uniqueId || nickname;
+    const likeCount = Number((data && (data.count || data.likeCount)) || 1);
     broadcast({
       type: 'like',
+      user: nickname,
       userId,
       nickname,
       likeCount
     });
   });
 
-  // Viewer count updates
-  tiktokConnection.on('roomUser', (data) => {
-    const count = data?.viewerCount ?? data?.total ?? data?.userCount ?? 0;
-    if (typeof count === 'number' && count >= 0) {
+  // Entrada de espectadores (atualiza contador em tempo real)
+  tiktokConnection.on('member', (data) => {
+    const count = Number((data && (data.memberCount ?? data.viewerCount)) || 0);
+    if (count > 0) {
       currentViewerCount = count;
-      broadcast({ type: 'roomUser', viewerCount: currentViewerCount });
+      broadcast({
+        type: 'roomUser',
+        viewerCount: currentViewerCount
+      });
     }
   });
 
-  tiktokConnection.on('member', (data) => {
-    const count = data?.memberCount ?? data?.viewerCount ?? 0;
-    if (typeof count === 'number' && count > 0) {
+  // Atualização periódica da sala (v2 data.total e v1 data.viewerCount)
+  tiktokConnection.on('roomUser', (data) => {
+    const count = Number((data && (data.total ?? data.viewerCount ?? data.userCount)) ?? -1);
+    if (count >= 0) {
       currentViewerCount = count;
-      broadcast({ type: 'roomUser', viewerCount: currentViewerCount });
+      broadcast({
+        type: 'roomUser',
+        viewerCount: currentViewerCount
+      });
     }
   });
 
   tiktokConnection.on('streamEnd', () => {
     currentViewerCount = 0;
-    broadcast({ type: 'status', connected: false, username: cleanUser, error: 'Live encerrada' });
+    broadcast({
+      type: 'status',
+      connected: false,
+      username: cleanUser,
+      viewerCount: 0,
+      error: 'Live encerrada',
+      message: 'Live encerrada'
+    });
   });
 }
 
@@ -245,29 +335,33 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer((req, res) => {
-  const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
   if (parsedUrl.pathname === '/events') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*'
     });
     res.write('\n');
-    clients.add(res);
+    sseClients.add(res);
 
     res.write(
       `data: ${JSON.stringify({
         type: 'status',
-        connected: !!(tiktokConnection && tiktokConnection.isConnected),
+        connected: !!(tiktokConnection && currentTikTokUser),
         username: currentTikTokUser,
-        viewerCount: currentViewerCount
+        viewerCount: currentViewerCount,
+        message: currentTikTokUser
+          ? `LIVE CONECTADA: @${currentTikTokUser}`
+          : 'Clique em 📡 LIVE no topo para conectar seu @usuario'
       })}\n\n`
     );
 
     req.on('close', () => {
-      clients.delete(res);
+      sseClients.delete(res);
     });
     return;
   }
@@ -296,8 +390,52 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`🔥 Duelo das 4 Torcidas Live rodando em http://localhost:${PORT}`);
+if (WebSocketServer) {
+  wss = new WebSocketServer({ server });
+  wss.on('connection', (ws) => {
+    ws.send(
+      JSON.stringify({
+        type: 'status',
+        connected: !!(tiktokConnection && currentTikTokUser),
+        username: currentTikTokUser,
+        viewerCount: currentViewerCount,
+        message: currentTikTokUser
+          ? `LIVE CONECTADA: @${currentTikTokUser}`
+          : 'Servidor pronto! Digite seu @usuario para conectar.'
+      })
+    );
+
+    ws.on('message', (msg) => {
+      try {
+        const data = JSON.parse(msg.toString());
+        if ((data.type === 'connect_tiktok' || data.type === 'connect') && data.username) {
+          connectToTikTok(data.username);
+        }
+      } catch (_) {}
+    });
+  });
+}
+
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
+server.listen(PORT, '0.0.0.0', () => {
+  const ip = getLocalIP();
+  console.log('\n======================================================');
+  console.log('⚔️ DUELO DAS 4 TORCIDAS LIVE — SERVIDOR ATIVO');
+  console.log('======================================================');
+  console.log(`💻 Abra no Mac / Live Studio: http://localhost:${PORT}`);
+  console.log(`📱 Abra no Celular:           http://${ip}:${PORT}`);
+  console.log('======================================================\n');
   if (currentTikTokUser) {
     connectToTikTok(currentTikTokUser);
   }

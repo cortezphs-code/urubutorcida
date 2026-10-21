@@ -188,9 +188,10 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
         <h2>📡 CONECTAR TIKTOK LIVE</h2>
         <p>Digite seu <b>@usuario</b> do TikTok (em Live agora) para capturar comentários, likes, presentes e espectadores em tempo real.</p>
         <input type="text" id="tiktok-user-input" class="modal-input" placeholder="Ex: urubudoflow" />
+        <div id="live-modal-status" style="font-size:11px; color:#ffd700; margin-bottom:12px; min-height:18px; font-weight:700;"></div>
         <div class="modal-actions">
           <button class="btn-secondary" id="btn-close-modal">Fechar</button>
-          <button class="btn-primary" id="btn-connect-live">Conectar</button>
+          <button class="btn-primary" id="btn-connect-live">Conectar Live</button>
         </div>
       </div>
     </div>
@@ -656,22 +657,60 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       return null;
     }
 
-    // Connect SSE to server.js
-    function connectSSE() {
+    // Connect WebSocket (igual ao urubu-corrida-live) + fallback SSE
+    let ws = null;
+    let wsConnected = false;
+    const modalStatusEl = document.getElementById('live-modal-status');
+
+    function setModalStatus(msg, color = '#ffd700') {
+      if (modalStatusEl) {
+        modalStatusEl.textContent = msg;
+        modalStatusEl.style.color = color;
+      }
+    }
+
+    function connectLiveBackend() {
+      if (location.protocol === 'file:') {
+        setModalStatus(
+          '⚠️ Você abriu o arquivo index.html direto da pasta (file://). Para ler o chat do TikTok, rode "npm start" no terminal (http://localhost:3000) ou abra pelo link do Render!',
+          '#ff4d4d'
+        );
+        return;
+      }
+
       try {
-        const es = new EventSource('/events');
-        es.onmessage = (evt) => {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${proto}//${location.host}`);
+
+        ws.onopen = () => {
+          wsConnected = true;
+          setModalStatus('✅ Servidor conectado! Digite seu @usuario acima e clique em Conectar Live.', '#00ff88');
+          // Auto-connect if ?user= in URL or saved in localStorage
+          const urlUser = new URLSearchParams(location.search).get('user');
+          const savedUser = localStorage.getItem('tiktok_live_user') || '';
+          const autoUser = (urlUser || savedUser).replace(/^@/, '').trim();
+          if (autoUser) {
+            document.getElementById('tiktok-user-input').value = autoUser;
+            if (urlUser) {
+              ws.send(JSON.stringify({ type: 'connect_tiktok', username: autoUser }));
+            }
+          }
+        };
+
+        ws.onmessage = (evt) => {
           try {
             const data = JSON.parse(evt.data);
             handleServerEvent(data);
           } catch (_) {}
         };
-        es.onerror = () => {
-          liveConnected = false;
+
+        ws.onclose = () => {
+          wsConnected = false;
+          setTimeout(connectLiveBackend, 3000);
         };
       } catch (_) {}
     }
-    connectSSE();
+    connectLiveBackend();
 
     function handleServerEvent(data) {
       if (data.type === 'status') {
@@ -680,15 +719,21 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
         if (typeof data.viewerCount === 'number') {
           liveViewerCount = data.viewerCount;
         }
+        if (data.message || data.error) {
+          setModalStatus(data.error || data.message, liveConnected ? '#00ff88' : '#ffd700');
+        }
         if (liveConnected) {
           botsEnabled = false;
           document.getElementById('btn-bots').textContent = '🤖 BOTS: OFF';
           addTicker(`🟢 Conectado à Live de @${liveUsername}!`, '#00ff88');
+          setTimeout(() => {
+            document.getElementById('live-modal').classList.remove('open');
+          }, 800);
         }
         return;
       }
 
-      if (data.type === 'roomUser') {
+      if (data.type === 'roomUser' || data.type === 'viewers') {
         if (typeof data.viewerCount === 'number') {
           liveViewerCount = data.viewerCount;
         }
@@ -696,27 +741,34 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       }
 
       if (data.type === 'chat') {
+        const sender = data.nickname || data.user || 'Torcedor';
+        const uid = data.userId || sender;
         const teamKey = data.team || detectTeamClient(data.comment);
         if (teamKey && TEAMS[teamKey]) {
-          userLastTeam.set(data.userId || data.nickname, teamKey);
-          addTeamPower(teamKey, 1.3, data.nickname, `+1 ${TEAMS[teamKey].cmd}`);
-          addTicker(`💬 @${data.nickname}: ${data.comment}`, TEAMS[teamKey].accent);
+          userLastTeam.set(uid, teamKey);
+          addTeamPower(teamKey, 1.3, sender, `+1 ${TEAMS[teamKey].cmd}`);
+          addTicker(`💬 @${sender}: ${data.comment}`, TEAMS[teamKey].accent);
+        } else if (data.comment) {
+          addTicker(`💬 @${sender}: ${data.comment}`, '#b5bfd4');
         }
         return;
       }
 
       if (data.type === 'like') {
-        const teamKey = userLastTeam.get(data.userId || data.nickname);
+        const sender = data.nickname || data.user || 'Torcedor';
+        const uid = data.userId || sender;
+        const teamKey = userLastTeam.get(uid);
         if (teamKey && TEAMS[teamKey]) {
-          addTeamPower(teamKey, 0.35, data.nickname, `❤️ LIKE`);
+          addTeamPower(teamKey, 0.35, sender, `❤️ LIKE`);
         }
         return;
       }
 
       if (data.type === 'gift') {
-        let teamKey = userLastTeam.get(data.userId || data.nickname);
+        const sender = data.nickname || data.user || 'Torcedor VIP';
+        const uid = data.userId || sender;
+        let teamKey = userLastTeam.get(uid);
         if (!teamKey) {
-          // Pick team with lowest share or random if donor hasn't voted yet
           teamKey = TEAM_KEYS[Math.floor(Math.random() * TEAM_KEYS.length)];
         }
         const diamonds = Math.max(1, Number(data.diamondCount) || 1);
@@ -729,8 +781,8 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
           boost = 14;
           label = `⚡ ${data.giftName} (${diamonds}💎)!`;
         }
-        addTeamPower(teamKey, boost, data.nickname, label);
-        addTicker(`🎁 @${data.nickname} enviou ${data.giftName} para ${TEAMS[teamKey].name}!`, '#ffd700');
+        addTeamPower(teamKey, boost, sender, label);
+        addTicker(`🎁 @${sender} enviou ${data.giftName} para ${TEAMS[teamKey].name}!`, '#ffd700');
       }
     }
 
@@ -772,12 +824,16 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       }
     });
 
-    // Click directly on any quadrant to boost that team
+    // Click directly on any quadrant to boost that team, or top-left pill to open Live Modal
     canvas.addEventListener('pointerdown', (e) => {
       initAudio();
       const rect = canvas.getBoundingClientRect();
       const cx = ((e.clientX - rect.left) / rect.width) * W;
       const cy = ((e.clientY - rect.top) / rect.height) * H;
+      if (cx >= 20 && cx <= 480 && cy >= 15 && cy <= 85) {
+        document.getElementById('live-modal').classList.add('open');
+        return;
+      }
       if (cx >= ARENA_X && cx <= ARENA_X + ARENA_W && cy >= ARENA_Y && cy <= ARENA_Y + ARENA_H) {
         const sy = ARENA_Y + ARENA_H * splitY;
         const stx = ARENA_X + ARENA_W * splitTopX;
@@ -819,13 +875,19 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       liveModal.classList.remove('open');
     });
     document.getElementById('btn-connect-live').addEventListener('click', () => {
-      const user = document.getElementById('tiktok-user-input').value.trim();
+      const user = document.getElementById('tiktok-user-input').value.replace(/^@/, '').trim();
       if (!user) return;
-      fetch(`/connect?user=${encodeURIComponent(user)}`)
-        .then(() => {
-          liveModal.classList.remove('open');
-        })
-        .catch(() => {});
+      try {
+        localStorage.setItem('tiktok_live_user', user);
+      } catch (_) {}
+      setModalStatus(`🔌 Conectando à live de @${user}...`, '#ffd700');
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'connect_tiktok', username: user }));
+      } else {
+        fetch(`/connect?user=${encodeURIComponent(user)}`).catch(() => {
+          setModalStatus('❌ Servidor não encontrado! Rode "npm start" ou abra pelo link do Render.', '#ff4d4d');
+        });
+      }
     });
 
     // Main Update & Draw Loop
