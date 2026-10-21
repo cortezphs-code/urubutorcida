@@ -168,7 +168,7 @@ function connectToTikTok(username) {
 
   tiktokConnection = new LiveConnectionClass(cleanUser, {
     processInitialData: true,
-    enableExtendedGiftInfo: true
+    enableExtendedGiftInfo: false
   });
 
   // IMPORTANTE: evita crash do Node se o TikTok emitir aviso/erro secundário
