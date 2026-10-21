@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: urubu-duelo-torcidas
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: TIKTOK_USER
+        sync: false

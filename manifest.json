@@ -1,0 +1,9 @@
+{
+  "name": "Duelo das 4 Torcidas — Live",
+  "short_name": "Duelo Torcidas",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#070913",
+  "theme_color": "#e50914"
+}
