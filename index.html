@@ -394,8 +394,8 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       fla: {
         id: 'fla',
         name: 'FLAMENGO',
-        mascotName: 'URUBU',
-        cmd: 'URUBU',
+        mascotName: 'MENGO',
+        cmd: 'MENGO',
         color1: '#e50914',
         color2: '#5c0005',
         accent: '#ff3b3b',
@@ -409,7 +409,7 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
         id: 'pal',
         name: 'PALMEIRAS',
         mascotName: 'PORCO',
-        cmd: 'PORCO',
+        cmd: 'VERDAO',
         color1: '#00a84f',
         color2: '#003d1b',
         accent: '#2bff88',
@@ -818,11 +818,11 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
     // Keyboard shortcuts for testing
     window.addEventListener('keydown', (e) => {
       const k = e.key.toLowerCase();
-      if (k === '1') addTeamPower('fla', 2.0, 'Voce_FLA', '🔥 URUBU!');
+      if (k === '1') addTeamPower('fla', 2.0, 'Voce_FLA', '🔥 MENGO!');
       if (k === '2') addTeamPower('pal', 2.0, 'Voce_PAL', '🔥 PORCO!');
       if (k === '3') addTeamPower('cor', 2.0, 'Voce_COR', '🔥 GAVIÃO!');
       if (k === '4') addTeamPower('vas', 2.0, 'Voce_VAS', '🔥 VASCO!');
-      if (k === 'q') addTeamPower('fla', 12.0, 'VIP_FLA', '💣 SUPER URUBU!');
+      if (k === 'q') addTeamPower('fla', 12.0, 'VIP_FLA', '💣 SUPER MENGO!');
       if (k === 'w') addTeamPower('pal', 12.0, 'VIP_PAL', '💣 SUPER PORCO!');
       if (k === 'e') addTeamPower('cor', 12.0, 'VIP_COR', '💣 SUPER GAVIÃO!');
       if (k === 'r') addTeamPower('vas', 12.0, 'VIP_VAS', '💣 SUPER VASCO!');
@@ -1274,7 +1274,7 @@ window.COR_VAS_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXh
       ctx.font = '900 20px "Montserrat", sans-serif';
       ctx.fillStyle = '#00e5ff';
       ctx.textAlign = 'left';
-      ctx.fillText('💬 ÚLTIMOS COMENTÁRIOS E AÇÕES NA LIVE (DIGITE URUBU / PORCO / GAVIAO / VASCO):', 50, tickerY + 32);
+      ctx.fillText('💬 ÚLTIMOS COMENTÁRIOS E AÇÕES NA LIVE (DIGITE MENGO / VERDAO / GAVIAO / VASCO):', 50, tickerY + 32);
 
       if (recentTicker.length === 0) {
         ctx.font = '800 22px "Montserrat", sans-serif';
